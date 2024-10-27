@@ -2,10 +2,14 @@
 It's a simple single-threaded executor.
 */
 
+use std::any::Any;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, RawWaker, RawWakerVTable, Waker};
+use some_executor::{DynExecutor, DynLocalExecutor, DynONotifier, LocalExecutorExt, SomeExecutor, SomeLocalExecutor};
+use some_executor::observer::{ExecutorNotified, NoNotified, Observer, ObserverNotified};
+use some_executor::task::{SpawnedTask, Task};
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
     |data| {
@@ -32,23 +36,11 @@ enum RunResult {
     Done
 }
 
-struct Task<'a> {
-    future: Pin<Box<dyn Future<Output=()> + 'a>>
-}
 
-impl<'a> Task<'a> {
-    fn new<F>(future: F) -> Self
-    where
-        F: Future<Output = ()> + 'a
-    {
-        Task {
-            future: Box::pin(future)
-        }
-    }
-}
+
 
 pub struct Executor<'tasks> {
-    tasks: Vec<Task<'tasks>>,
+    tasks: Vec<SpawnedTask<Pin<Box<dyn Future<Output=Box<dyn Any>> + 'tasks>>,NoNotified,Self>>,
     //todo: remove
     data: PhantomData<&'tasks ()>,
     waker: Waker,
@@ -65,19 +57,13 @@ impl<'tasks> Executor<'tasks> {
         }
     }
     /**
-    Spawns the task onto the executor.
-    */
-    pub fn spawn(&mut self, future: impl Future<Output = ()> + 'tasks) {
-        self.tasks.push(Task::new(future));
-    }
-    /**
     Runs the executor a small amount if there is some work to be performed.
 
     */
     pub fn do_some(&mut self) -> RunResult {
         let mut context = Context::from_waker(&self.waker);
         if let Some(mut task) = self.tasks.pop() {
-            let e = Pin::as_mut(&mut task.future).poll(&mut context);
+            let e = Pin::new(&mut task).poll(&mut context);
             todo!("Add task back to the queue if it's not done");
 
         }
@@ -93,5 +79,44 @@ impl<'tasks> Executor<'tasks> {
     pub fn drain(self) {
         todo!()
     }
+}
+
+impl SomeLocalExecutor for Executor<'_> {
+    type ExecutorNotifier = NoNotified;
+    fn spawn_local<F: Future, Notifier: ObserverNotified<F::Output>>(&mut self, task: Task<F, Notifier>) -> Observer<F::Output, Self::ExecutorNotifier>
+    where
+        Self: Sized
+    {
+        todo!()
+    }
+
+    fn spawn_local_async<F: Future, Notifier: ObserverNotified<F::Output>>(&mut self, task: Task<F, Notifier>) -> impl Future<Output=Observer<F::Output, Self::ExecutorNotifier>> + Send + 'static
+    where
+        Self: Sized
+    {
+        async { todo!() }
+    }
+
+    fn spawn_local_objsafe(&mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<DynONotifier>>) -> Observer<Box<dyn Any>, Box<dyn ExecutorNotified>> {
+        todo!()
+    }
+
+    fn clone_local_box(&self) -> Box<DynLocalExecutor> {
+        todo!()
+    }
+
+    fn executor_notifier(&mut self) -> Option<Self::ExecutorNotifier> {
+        todo!()
+    }
+}
+
+impl Clone for Executor<'_> {
+    fn clone(&self) -> Self {
+        todo!()
+    }
+}
+
+impl LocalExecutorExt for Executor<'_> {
+
 }
 
