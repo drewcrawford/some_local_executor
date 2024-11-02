@@ -26,7 +26,7 @@ const VTABLE: RawWakerVTable = RawWakerVTable::new(
     }
 );
 
-
+#[derive(Debug,PartialEq)]
 enum RunResult {
     ///The executor performed no work.
     DidNothing,
@@ -126,13 +126,46 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
     }
 }
 
-impl Clone for Executor<'_> {
-    fn clone(&self) -> Self {
-        todo!()
-    }
-}
 
 impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
 
+}
+
+#[cfg(test)] mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use some_executor::observer::NoNotified;
+    use some_executor::SomeLocalExecutor;
+    use some_executor::task::{Configuration, Task};
+    use crate::{Executor, RunResult};
+
+    struct PollCounter(u8);
+    impl Future for PollCounter {
+        type Output = ();
+        fn poll(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+            let this = self.get_mut();
+            this.0 += 1;
+            if this.0 < 10 {
+                std::task::Poll::Pending
+            }
+            else {
+                std::task::Poll::Ready(())
+            }
+        }
+    }
+
+    #[test] fn test_do() {
+        let mut executor = Executor::new();
+        assert_eq!(executor.do_some(), RunResult::DidNothing);
+        let counter = PollCounter(0);
+        let task: Task<PollCounter,NoNotified> = Task::new("test_do".to_string(), counter, Configuration::default(),None);
+
+        let observer = executor.spawn_local(task);
+        for _ in 0..9 {
+            assert_eq!(executor.do_some(), RunResult::DidSome);
+        }
+        assert_eq!(executor.do_some(), RunResult::Done);
+
+    }
 }
 
