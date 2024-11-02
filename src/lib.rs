@@ -90,16 +90,23 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
         F: 'future,
         <F as Future>::Output: Unpin,
     {
-        todo!()
+        let (task,observer) = task.spawn_local(self);
+        self.tasks.push(Box::pin(task));
+        observer
     }
 
     fn spawn_local_async<F: Future, Notifier: ObserverNotified<F::Output>>(&mut self, task: Task<F, Notifier>) -> impl Future<Output=Observer<F::Output, Self::ExecutorNotifier>>
     where
-        Self: Sized
+        Self: Sized,
+        F: 'future,
     {
-        async { todo!() }
+        async {
+            let (spawn,observer)  = task.spawn_local(self);
+            let pinned_spawn = Box::pin(spawn);
+            self.tasks.push(pinned_spawn);
+            observer
+        }
     }
-
     fn spawn_local_objsafe(&mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Observer<Box<dyn Any>, Box<dyn ExecutorNotified>> {
         todo!()
     }
