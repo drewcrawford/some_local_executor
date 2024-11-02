@@ -108,15 +108,21 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
         }
     }
     fn spawn_local_objsafe(&mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Observer<Box<dyn Any>, Box<dyn ExecutorNotified>> {
-        todo!()
+        let (spawn, observer) = task.spawn_local_objsafe(self);
+        self.tasks.push(Box::pin(spawn));
+        observer
     }
 
     fn spawn_local_objsafe_async<'executor>(&'executor mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Box<dyn Future<Output=Observer<Box<dyn Any>, Box<dyn ExecutorNotified>>> + 'executor> {
-        todo!()
+        Box::new(async {
+            let (spawn, observer) = task.spawn_local_objsafe(self);
+            self.tasks.push(Box::pin(spawn));
+            observer
+        })
     }
 
     fn executor_notifier(&mut self) -> Option<Self::ExecutorNotifier> {
-        todo!()
+        None
     }
 }
 
