@@ -11,18 +11,26 @@ use some_executor::{LocalExecutorExt, SomeExecutor, SomeLocalExecutor};
 use some_executor::observer::{ExecutorNotified, NoNotified, Observer, ObserverNotified};
 use some_executor::task::{DynLocalSpawnedTask, SpawnedLocalTask, SpawnedTask, Task};
 
+struct WakerInfo;
+
+
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
     |data| {
+        //drop is also unimplemented
+        todo!()
+
+    },
+    |data| {
+        //drop is also unimplemented
+        todo!()
+
+    },
+    |data| {
+        //drop is also unimplemented
         todo!()
     },
     |data| {
-        todo!()
-    },
-    |data| {
-        todo!()
-    },
-    |data| {
-        todo!()
+        //hard to implement this one first
     }
 );
 
@@ -40,10 +48,11 @@ enum RunResult {
 
 
 pub struct Executor<'tasks> {
-    tasks: Vec<Pin<Box<dyn DynLocalSpawnedTask + 'tasks>>>,
+    tasks: Vec<Pin<Box<dyn DynLocalSpawnedTask<Self> + 'tasks>>>,
     //todo: remove
     data: PhantomData<&'tasks ()>,
-    waker: Waker,
+    //option so we can take and untake
+    waker: Option<Waker>,
 }
 
 impl<'tasks> Executor<'tasks> {
@@ -53,7 +62,7 @@ impl<'tasks> Executor<'tasks> {
         Executor {
             tasks: Vec::new(),
             data: PhantomData,
-            waker
+            waker: Some(waker)
         }
     }
     /**
@@ -61,14 +70,44 @@ impl<'tasks> Executor<'tasks> {
 
     */
     pub fn do_some(&mut self) -> RunResult {
-        let mut context = Context::from_waker(&self.waker);
-        if let Some(mut task) = self.tasks.pop() {
-            // let e = Pin::new(&mut task).poll(&mut context);
-            todo!("Add task back to the queue if it's not done");
+        let attempt_tasks = self.tasks.drain(..).collect::<Vec<_>>();
+        let move_waker = self.waker.take().expect("No waker");
+        let mut context = Context::from_waker(&move_waker);
 
+        let mut new_tasks = Vec::new();
+        let mut did_some = false;
+        let now = std::time::Instant::now();
+        for mut task in attempt_tasks {
+            if task.poll_after() > now {
+                new_tasks.push(task);
+                continue;
+            }
+            //otherwise...
+            did_some = true;
+
+            let e = task.as_mut().poll(&mut context, self);
+            match e {
+                std::task::Poll::Ready(_) => {
+                    // do nothing
+                }
+                std::task::Poll::Pending => {
+                    new_tasks.push(task);
+                }
+            }
+        }
+
+        self.tasks = new_tasks;
+        self.waker = Some(move_waker);
+        if self.tasks.is_empty() {
+            if did_some {
+                RunResult::Done
+            }
+            else {
+                RunResult::DidNothing
+            }
         }
         else {
-            RunResult::DidNothing
+            RunResult::DidSome
         }
     }
     /**
@@ -102,8 +141,7 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
     {
         async {
             let (spawn,observer)  = task.spawn_local(self);
-            let pinned_spawn = Box::pin(spawn);
-            self.tasks.push(pinned_spawn);
+            self.tasks.push(Box::pin(spawn));
             observer
         }
     }
@@ -134,7 +172,7 @@ impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
 #[cfg(test)] mod tests {
     use std::future::Future;
     use std::pin::Pin;
-    use some_executor::observer::NoNotified;
+    use some_executor::observer::{NoNotified, Observation};
     use some_executor::SomeLocalExecutor;
     use some_executor::task::{Configuration, Task};
     use crate::{Executor, RunResult};
@@ -158,11 +196,12 @@ impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
         let mut executor = Executor::new();
         assert_eq!(executor.do_some(), RunResult::DidNothing);
         let counter = PollCounter(0);
-        let task: Task<PollCounter,NoNotified> = Task::new("test_do".to_string(), counter, Configuration::default(),None);
+        let task = Task::without_notifications("test_do".to_string(), counter, Configuration::default());
 
         let observer = executor.spawn_local(task);
         for _ in 0..9 {
             assert_eq!(executor.do_some(), RunResult::DidSome);
+
         }
         assert_eq!(executor.do_some(), RunResult::Done);
 
