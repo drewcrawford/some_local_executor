@@ -2,110 +2,111 @@
 It's a simple single-threaded executor.
 */
 
+mod continuation_type;
+
 use std::any::Any;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::rc::Rc;
+use std::sync::Arc;
 use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 use some_executor::{LocalExecutorExt, SomeExecutor, SomeLocalExecutor};
 use some_executor::observer::{ExecutorNotified, NoNotified, Observer, ObserverNotified};
 use some_executor::task::{DynLocalSpawnedTask, SpawnedLocalTask, SpawnedTask, Task};
+use crate::continuation_type::BlockingContinuationType;
 
-struct WakerInfo;
 
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
     |data| {
-        //drop is also unimplemented
         todo!()
 
     },
     |data| {
-        //drop is also unimplemented
         todo!()
 
     },
     |data| {
-        //drop is also unimplemented
         todo!()
     },
     |data| {
-        //hard to implement this one first
+        unsafe{Arc::from_raw(data as *const Arc<WakeContext>)}; //drop the arc
     }
 );
 
-#[derive(Debug,PartialEq)]
-enum RunResult {
-    ///The executor performed no work.
-    DidNothing,
-    ///The executor did some work, and more is available to do.
-    DidSome,
-    /// The executor did some work, and there is no more work to do at present.
-    Done
+//wrapped in RC
+struct WakeContext;
+
+struct SubmittedTask<'task> {
+    task: Pin<Box<dyn DynLocalSpawnedTask<Executor<'task>> + 'task>>,
+    ///Providing a stable Waker for the task is optimal.
+    waker: Waker,
+}
+
+impl<'executor> SubmittedTask<'executor> {
+    fn new(task: Pin<Box<(dyn DynLocalSpawnedTask<Executor<'executor>> + 'executor)>>) -> Self {
+        let waker = unsafe {
+            Waker::from_raw(RawWaker::new(Arc::into_raw(Arc::new(WakeContext)) as *const (), &VTABLE))
+        };
+        SubmittedTask {
+            task,
+            waker,
+        }
+    }
 }
 
 
 
 
 pub struct Executor<'tasks> {
-    tasks: Vec<Pin<Box<dyn DynLocalSpawnedTask<Self> + 'tasks>>>,
-    //option so we can take and untake
-    waker: Option<Waker>,
+    tasks: Vec<SubmittedTask<'tasks>>,
 }
 
 impl<'tasks> Executor<'tasks> {
     pub fn new() -> Self {
+        //Note that Waker requires Send/sync.  Accordingly, we need Arc, not Rc, for safety.
+        //see https://github.com/rust-lang/rust/issues/118959#issuecomment-2453582510
+        let waker_context = Arc::into_raw(Arc::new(WakeContext));
 
-        let waker = unsafe{Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE))};
         Executor {
             tasks: Vec::new(),
-            waker: Some(waker)
         }
     }
     /**
-    Runs the executor a small amount if there is some work to be performed.
+    Runs the executor until there is no more immediate work to be performed.
 
     */
-    pub fn do_some(&mut self) -> RunResult {
+    pub fn do_some(&mut self) -> BlockingContinuationType {
         let attempt_tasks = self.tasks.drain(..).collect::<Vec<_>>();
-        let move_waker = self.waker.take().expect("No waker");
-        let mut context = Context::from_waker(&move_waker);
+        let b = BlockingContinuationType;
+
 
         let mut new_tasks = Vec::new();
-        let mut did_some = false;
         let now = std::time::Instant::now();
         for mut task in attempt_tasks {
-            if task.poll_after() > now {
+            if task.task.poll_after() > now {
                 new_tasks.push(task);
                 continue;
             }
-            //otherwise...
-            did_some = true;
 
-            let e = task.as_mut().poll(&mut context, self);
+            let mut context = Context::from_waker(&task.waker);
+
+            let e = task.task.as_mut().poll(&mut context, self);
             match e {
                 std::task::Poll::Ready(_) => {
                     // do nothing
                 }
                 std::task::Poll::Pending => {
-                    new_tasks.push(task);
+
                 }
             }
         }
 
         self.tasks = new_tasks;
-        self.waker = Some(move_waker);
-        if self.tasks.is_empty() {
-            if did_some {
-                RunResult::Done
-            }
-            else {
-                RunResult::DidNothing
-            }
-        }
-        else {
-            RunResult::DidSome
-        }
+
+        todo!()
+
     }
     /**
     Drains the executor. After this call, the executor can no longer be used.
@@ -127,7 +128,7 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
         <F as Future>::Output: Unpin,
     {
         let (task,observer) = task.spawn_local(self);
-        self.tasks.push(Box::pin(task));
+        self.tasks.push(SubmittedTask::new(Box::pin(task)));
         observer
     }
 
@@ -138,20 +139,20 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
     {
         async {
             let (spawn,observer)  = task.spawn_local(self);
-            self.tasks.push(Box::pin(spawn));
+            self.tasks.push(SubmittedTask::new(Box::pin(spawn)));
             observer
         }
     }
     fn spawn_local_objsafe(&mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Observer<Box<dyn Any>, Box<dyn ExecutorNotified>> {
         let (spawn, observer) = task.spawn_local_objsafe(self);
-        self.tasks.push(Box::pin(spawn));
+        self.tasks.push(SubmittedTask::new(Box::pin(spawn)));
         observer
     }
 
     fn spawn_local_objsafe_async<'executor>(&'executor mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Box<dyn Future<Output=Observer<Box<dyn Any>, Box<dyn ExecutorNotified>>> + 'executor> {
         Box::new(async {
             let (spawn, observer) = task.spawn_local_objsafe(self);
-            self.tasks.push(Box::pin(spawn));
+            self.tasks.push(SubmittedTask::new(Box::pin(spawn)));
             observer
         })
     }
@@ -172,7 +173,7 @@ impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
     use some_executor::observer::{NoNotified, Observation};
     use some_executor::SomeLocalExecutor;
     use some_executor::task::{Configuration, Task};
-    use crate::{Executor, RunResult};
+    use crate::{Executor};
 
     struct PollCounter(u8);
     impl Future for PollCounter {
@@ -189,17 +190,21 @@ impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
         }
     }
 
+    #[test] fn test_do_empty() {
+        let mut executor = Executor::new();
+        executor.do_some();
+    }
+
     #[test] fn test_do() {
         let mut executor = Executor::new();
-        assert_eq!(executor.do_some(), RunResult::DidNothing);
         let counter = PollCounter(0);
         let task = Task::without_notifications("test_do".to_string(), counter, Configuration::default());
 
         let observer = executor.spawn_local(task);
         for _ in 0..9 {
-            assert_eq!(executor.do_some(), RunResult::DidSome);
+            executor.do_some();
+            assert_eq!(observer.observe(), Observation::Pending);
         }
-        assert_eq!(executor.do_some(), RunResult::Done);
 
     }
 }
