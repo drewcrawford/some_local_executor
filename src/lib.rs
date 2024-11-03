@@ -49,8 +49,6 @@ enum RunResult {
 
 pub struct Executor<'tasks> {
     tasks: Vec<Pin<Box<dyn DynLocalSpawnedTask<Self> + 'tasks>>>,
-    //todo: remove
-    data: PhantomData<&'tasks ()>,
     //option so we can take and untake
     waker: Option<Waker>,
 }
@@ -61,7 +59,6 @@ impl<'tasks> Executor<'tasks> {
         let waker = unsafe{Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE))};
         Executor {
             tasks: Vec::new(),
-            data: PhantomData,
             waker: Some(waker)
         }
     }
@@ -201,7 +198,6 @@ impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
         let observer = executor.spawn_local(task);
         for _ in 0..9 {
             assert_eq!(executor.do_some(), RunResult::DidSome);
-
         }
         assert_eq!(executor.do_some(), RunResult::Done);
 
