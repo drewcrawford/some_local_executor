@@ -14,6 +14,7 @@ struct Shared {
     mutex: Mutex<bool>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Sender {
 }
 

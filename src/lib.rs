@@ -15,7 +15,7 @@ use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 use some_executor::{LocalExecutorExt, SomeExecutor, SomeLocalExecutor};
 use some_executor::observer::{ExecutorNotified, NoNotified, Observer, ObserverNotified};
 use some_executor::task::{DynLocalSpawnedTask, SpawnedLocalTask, SpawnedTask, Task};
-use crate::continuation_type::Parker;
+use crate::continuation_type::{Parker, Sender};
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
     |data| {
@@ -28,9 +28,12 @@ const VTABLE: RawWakerVTable = RawWakerVTable::new(
     },
     |data| {
         let context = unsafe{
+            // we effectively rely on the Send/Sync property of WakeContext here.
+            // fortunately we can check it at compile time
+            assert_send_sync::<WakeContext>();
             Arc::from_raw(data as *const WakeContext)
         };
-        todo!();
+        context.sender.signal();
 
     },
     |data| {
@@ -41,8 +44,12 @@ const VTABLE: RawWakerVTable = RawWakerVTable::new(
     }
 );
 
-//wrapped in RC
-struct WakeContext;
+fn assert_send_sync<T: Send + Sync>() {}
+
+//wrapped in Arc
+struct WakeContext {
+    sender: continuation_type::Sender,
+}
 
 struct SubmittedTask<'task> {
     task: Pin<Box<dyn DynLocalSpawnedTask<Executor<'task>> + 'task>>,
@@ -51,10 +58,15 @@ struct SubmittedTask<'task> {
 }
 
 impl<'executor> SubmittedTask<'executor> {
-    fn new(task: Pin<Box<(dyn DynLocalSpawnedTask<Executor<'executor>> + 'executor)>>) -> Self {
-        let context = Arc::new(WakeContext);
+    fn new(task: Pin<Box<(dyn DynLocalSpawnedTask<Executor<'executor>> + 'executor)>>, sender: Sender) -> Self {
+        let context = Arc::new(WakeContext{
+            sender
+        });
         let context_raw = Arc::into_raw(context);
         let waker = unsafe {
+            // we effectively rely on the Send/Sync property of WakeContext here.
+            // fortunately we can check it at compile time
+            assert_send_sync::<WakeContext>();
             Waker::from_raw(RawWaker::new(context_raw as *const (), &VTABLE))
         };
         SubmittedTask {
@@ -127,9 +139,10 @@ impl<'tasks> Executor<'tasks> {
         todo!()
     }
 
-    fn enqueue_task(&mut self, task: SubmittedTask<'tasks>) {
-        if task.task.poll_after() < std::time::Instant::now() {
-            self.ready_for_poll.push(task);
+    fn enqueue_task(&mut self, task: Pin<Box<(dyn DynLocalSpawnedTask<Executor<'tasks>> + 'tasks)>>) {
+        if task.poll_after() < std::time::Instant::now() {
+
+            self.ready_for_poll.push(SubmittedTask::new(task, self.wake_sender.clone()));
         }
         else {
             todo!("Not yet implemented")
@@ -147,7 +160,7 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
         <F as Future>::Output: Unpin,
     {
         let (task,observer) = task.spawn_local(self);
-        self.enqueue_task(SubmittedTask::new(Box::pin(task)));
+        self.enqueue_task(Box::pin(task));
         observer
     }
 
@@ -158,20 +171,20 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
     {
         async {
             let (spawn,observer)  = task.spawn_local(self);
-            self.enqueue_task(SubmittedTask::new(Box::pin(spawn)));
+            self.enqueue_task(Box::pin(spawn));
             observer
         }
     }
     fn spawn_local_objsafe(&mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Observer<Box<dyn Any>, Box<dyn ExecutorNotified>> {
         let (spawn, observer) = task.spawn_local_objsafe(self);
-        self.enqueue_task(SubmittedTask::new(Box::pin(spawn)));
+        self.enqueue_task(Box::pin(spawn));
         observer
     }
 
     fn spawn_local_objsafe_async<'executor>(&'executor mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Box<dyn Future<Output=Observer<Box<dyn Any>, Box<dyn ExecutorNotified>>> + 'executor> {
         Box::new(async {
             let (spawn, observer) = task.spawn_local_objsafe(self);
-            self.enqueue_task(SubmittedTask::new(Box::pin(spawn)));
+            self.enqueue_task(Box::pin(spawn));
             observer
         })
     }
