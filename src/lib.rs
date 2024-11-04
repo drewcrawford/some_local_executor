@@ -7,6 +7,7 @@ mod continuation_type;
 use std::any::Any;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::mem::forget;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -18,11 +19,18 @@ use crate::continuation_type::Parker;
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
     |data| {
-        todo!()
-
+        let context = unsafe{
+            Arc::from_raw(data as *const WakeContext)
+        };
+        let cloned = Arc::into_raw(context.clone());
+        forget(context);
+        RawWaker::new(cloned as *const (), &VTABLE)
     },
     |data| {
-        todo!()
+        let context = unsafe{
+            Arc::from_raw(data as *const WakeContext)
+        };
+        todo!();
 
     },
     |data| {
