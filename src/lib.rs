@@ -14,7 +14,6 @@ use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 use some_executor::{LocalExecutorExt, SomeExecutor, SomeLocalExecutor};
 use some_executor::observer::{ExecutorNotified, NoNotified, Observer, ObserverNotified};
 use some_executor::task::{DynLocalSpawnedTask, SpawnedLocalTask, SpawnedTask, Task};
-use crate::continuation_type::BlockingContinuationType;
 
 
 
@@ -31,7 +30,7 @@ const VTABLE: RawWakerVTable = RawWakerVTable::new(
         todo!()
     },
     |data| {
-        unsafe{Arc::from_raw(data as *const Arc<WakeContext>)}; //drop the arc
+        unsafe{Arc::from_raw(data as *const WakeContext)}; //drop the arc
     }
 );
 
@@ -40,14 +39,16 @@ struct WakeContext;
 
 struct SubmittedTask<'task> {
     task: Pin<Box<dyn DynLocalSpawnedTask<Executor<'task>> + 'task>>,
-    ///Providing a stable Waker for the task is optimal.
+    ///Providing a stable Waker for each task is optimal.
     waker: Waker,
 }
 
 impl<'executor> SubmittedTask<'executor> {
     fn new(task: Pin<Box<(dyn DynLocalSpawnedTask<Executor<'executor>> + 'executor)>>) -> Self {
+        let context = Arc::new(WakeContext);
+        let context_raw = Arc::into_raw(context);
         let waker = unsafe {
-            Waker::from_raw(RawWaker::new(Arc::into_raw(Arc::new(WakeContext)) as *const (), &VTABLE))
+            Waker::from_raw(RawWaker::new(context_raw as *const (), &VTABLE))
         };
         SubmittedTask {
             task,
@@ -61,25 +62,28 @@ impl<'executor> SubmittedTask<'executor> {
 
 pub struct Executor<'tasks> {
     tasks: Vec<SubmittedTask<'tasks>>,
+    wake_receiver: continuation_type::Receiver,
+    wake_sender: continuation_type::Sender,
 }
 
 impl<'tasks> Executor<'tasks> {
     pub fn new() -> Self {
-        //Note that Waker requires Send/sync.  Accordingly, we need Arc, not Rc, for safety.
-        //see https://github.com/rust-lang/rust/issues/118959#issuecomment-2453582510
-        let waker_context = Arc::into_raw(Arc::new(WakeContext));
+
+        let (wake_sender, wake_receiver) = continuation_type::blocking_continuation_type();
 
         Executor {
             tasks: Vec::new(),
+            wake_receiver,
+            wake_sender
         }
     }
     /**
     Runs the executor until there is no more immediate work to be performed.
 
+    Returns a reference to a receiver that can be [continuation_type::Receiver::park]ed to wait for more work to be available.
     */
-    pub fn do_some(&mut self) -> BlockingContinuationType {
+    pub fn do_some(&mut self) -> &continuation_type::Receiver {
         let attempt_tasks = self.tasks.drain(..).collect::<Vec<_>>();
-        let b = BlockingContinuationType;
 
 
         let mut new_tasks = Vec::new();
@@ -105,8 +109,7 @@ impl<'tasks> Executor<'tasks> {
 
         self.tasks = new_tasks;
 
-        todo!()
-
+        &self.wake_receiver
     }
     /**
     Drains the executor. After this call, the executor can no longer be used.
@@ -202,8 +205,9 @@ impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
 
         let observer = executor.spawn_local(task);
         for _ in 0..9 {
-            executor.do_some();
+            let park = executor.do_some();
             assert_eq!(observer.observe(), Observation::Pending);
+            park.park();
         }
 
     }
