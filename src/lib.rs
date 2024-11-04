@@ -3,6 +3,7 @@ It's a simple single-threaded executor.
 */
 
 mod channel;
+mod some_executor_adapter;
 
 use std::any::Any;
 use std::future::Future;
@@ -13,7 +14,7 @@ use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 use some_executor::{LocalExecutorExt, SomeLocalExecutor};
 use some_executor::observer::{ExecutorNotified, NoNotified, Observer, ObserverNotified};
 use some_executor::task::{DynLocalSpawnedTask, Task, TaskID};
-use crate::channel::Sender;
+use crate::channel::{FindSlot, Sender};
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
     |data| {
@@ -98,6 +99,8 @@ pub struct Executor<'tasks> {
 
     //slot so we can take
     wake_receiver: Option<channel::Receiver>,
+
+    adapter_shared: Arc<some_executor_adapter::Shared>,
 }
 
 impl<'tasks> Executor<'tasks> {
@@ -108,6 +111,7 @@ impl<'tasks> Executor<'tasks> {
             ready_for_poll: Vec::new(),
             waiting_for_wake: Vec::new(),
             wake_receiver: Some(wake_receiver),
+            adapter_shared: Arc::new(some_executor_adapter::Shared::new()),
         }
     }
     /**
@@ -148,14 +152,26 @@ impl<'tasks> Executor<'tasks> {
         if self.ready_for_poll.is_empty() {
             let mut receiver = self.wake_receiver.take().expect("Receiver is not available");
             let task_id = receiver.recv_park();
-            //remove the first value from waiting_for_wake that has the same task_id
-            let task = {
-                let _interval = logwise::perfwarn_begin!("O(n) search for task_id");
+            match task_id {
+                FindSlot::FoundSlot(task_id) => {
+                    let task = {
+                        let _interval = logwise::perfwarn_begin!("O(n) search for task_id");
 
-                let pos = self.waiting_for_wake.iter().position(|x| x.task_id == task_id).expect("Task ID not found");
-                self.waiting_for_wake.remove(pos)
-            };
-            self.ready_for_poll.push(task);
+                        let pos = self.waiting_for_wake.iter().position(|x| x.task_id == task_id).expect("Task ID not found");
+                        self.waiting_for_wake.remove(pos)
+                    };
+                    self.ready_for_poll.push(task);
+
+                }
+                FindSlot::FoundTaskSubmitted => {
+                    todo!()
+                }
+                FindSlot::NoSlot => {
+                    unreachable!("spurious wakeup")
+                }
+            }
+            //remove the first value from waiting_for_wake that has the same task_id
+
 
             self.wake_receiver = Some(receiver);
         }
@@ -187,6 +203,10 @@ impl<'tasks> Executor<'tasks> {
         else {
             todo!("Not yet implemented")
         }
+    }
+
+    pub(crate) fn adapter_shared(&self) -> &Arc<some_executor_adapter::Shared> {
+        &self.adapter_shared
     }
 }
 

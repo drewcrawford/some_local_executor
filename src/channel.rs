@@ -16,9 +16,14 @@ Requirements are:
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use some_executor::task::TaskID;
+use crate::channel::FindSlot::FoundSlot;
 
-//taskid is known not to use this value
+//We borrow the high values to represent our own internal state.
+//TASK_ID is known not to use MAX, it can use the others.  But regardless
+//we check at runtime.
 const BLANK_SLOT: u64 = u64::MAX;
+const NEW_TASK_SUBMITTED: u64 = u64::MAX - 1;
+const INVALID_TASK_ID: u64 = NEW_TASK_SUBMITTED;
 
 pub struct Sender{
     task_id: TaskID,
@@ -46,6 +51,7 @@ impl Sender {
     pub fn with_receiver(receiver: &mut Receiver, task_id: TaskID) -> Self {
         let new_slot = Arc::new(AtomicU64::new(task_id.into()));
         let new_slot_recv = Arc::downgrade(&new_slot);
+        assert!(task_id.as_ref() < &INVALID_TASK_ID, "TaskID is too large");
         receiver.slots.push(new_slot_recv);
         Sender {
             task_id,
@@ -63,9 +69,15 @@ pub struct Receiver {
 
 }
 
+pub enum FindSlot {
+    FoundSlot(TaskID),
+    FoundTaskSubmitted,
+    NoSlot,
+}
+
 impl Receiver {
 
-    fn find_slot(slots: &mut Vec<Weak<AtomicU64>>) -> Option<u64> {
+    fn find_slot(slots: &mut Vec<Weak<AtomicU64>>) -> FindSlot {
         //GC the slots
         slots.retain(|slot| slot.upgrade().is_some());
 
@@ -76,25 +88,36 @@ impl Receiver {
                 }
                 Some(arc) => {
                     let read = arc.load(std::sync::atomic::Ordering::Relaxed);
-                    if read != BLANK_SLOT {
-                        //make the slot blank again, so that the message can be resent.
-                        arc.store(BLANK_SLOT, std::sync::atomic::Ordering::Relaxed);
-                        return Some(read);
+                    match read {
+                        BLANK_SLOT => {
+                            //ignore
+                        }
+                        NEW_TASK_SUBMITTED => {
+                            return FindSlot::FoundTaskSubmitted;
+                        }
+                        a if a < INVALID_TASK_ID => {
+                            //make the slot blank again, so that the message can be resent.
+                            arc.store(BLANK_SLOT, std::sync::atomic::Ordering::Relaxed);
+                            return FindSlot::FoundSlot(TaskID::from(a));
+                        }
+                        _ => {
+                            unreachable!("Invalid value in slot");
+                        }
                     }
                 }
             }
         }
-        None
+        FindSlot::NoSlot
     }
-    pub fn recv_park(&mut self) -> TaskID {
+    pub fn recv_park(&mut self) -> FindSlot {
         //grab guard to guarantee we are exclusive user
         let mut guard = self.shared.lock.lock().unwrap();
         while !*guard {
             guard = self.shared.condvar.wait(guard).unwrap();
         }
-        let found_slot = Self::find_slot(&mut self.slots).expect("No slot seems to be posted");
+        let found_slot = Receiver::find_slot(&mut self.slots);
         *guard = false;
-        found_slot.into()
+        found_slot
     }
     pub fn new() -> Self {
         Receiver {
