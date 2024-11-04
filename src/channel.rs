@@ -14,7 +14,7 @@ Requirements are:
  */
 
 use std::sync::atomic::AtomicU64;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use some_executor::task::TaskID;
 
 //taskid is known not to use this value
@@ -22,12 +22,20 @@ const BLANK_SLOT: u64 = u64::MAX;
 
 pub struct Sender{
     task_id: TaskID,
+    slot: Arc<AtomicU64>,
+    shared: Arc<Shared>,
+}
 
+struct Shared {
+    lock: Mutex<bool>,
+    condvar: Condvar,
 }
 
 impl Sender {
     pub fn send_by_ref(&self) {
-        todo!()
+        self.slot.store(self.task_id.into(), std::sync::atomic::Ordering::Relaxed);
+        *self.shared.lock.lock().unwrap() = true;
+        self.shared.condvar.notify_one();
     }
 
     pub fn send(self) {
@@ -36,38 +44,53 @@ impl Sender {
     }
 
     pub fn with_receiver(receiver: &mut Receiver, task_id: TaskID) -> Self {
+        let new_slot = Arc::new(AtomicU64::new(task_id.into()));
+        let new_slot_recv = Arc::downgrade(&new_slot);
+        receiver.slots.push(new_slot_recv);
         Sender {
-            task_id
+            task_id,
+            slot: new_slot,
+            shared: receiver.shared.clone(),
         }
     }
 }
 
 pub struct Receiver {
-    condvar: Condvar,
-    mutex: Mutex<bool>,
+    shared: Arc<Shared>,
     //holds one slot per open sender.
     //The main idea is we update the value, and then we flag the mutex, then we signal the condvar.
-    slots: Vec<u64>,
+    slots: Vec<Weak<AtomicU64>>,
 
 }
 
 impl Receiver {
 
-    fn find_slot(slots: &mut Vec<u64>) -> Option<u64> {
-        for slot in slots.iter_mut() {
-            if *slot == BLANK_SLOT {
-                let r = Some(*slot);
-                *slot = BLANK_SLOT;
-                return r;
+    fn find_slot(slots: &mut Vec<Weak<AtomicU64>>) -> Option<u64> {
+        //GC the slots
+        slots.retain(|slot| slot.upgrade().is_some());
+
+        for slot in slots.iter() {
+            match slot.upgrade() {
+                None => {
+                    //not overly concerned about it - we will GC it later
+                }
+                Some(arc) => {
+                    let read = arc.load(std::sync::atomic::Ordering::Relaxed);
+                    if read != BLANK_SLOT {
+                        //make the slot blank again, so that the message can be resent.
+                        arc.store(BLANK_SLOT, std::sync::atomic::Ordering::Relaxed);
+                        return Some(read);
+                    }
+                }
             }
         }
         None
     }
     pub fn recv_park(&mut self) -> TaskID {
         //grab guard to guarantee we are exclusive user
-        let mut guard = self.mutex.lock().unwrap();
+        let mut guard = self.shared.lock.lock().unwrap();
         while !*guard {
-            guard = self.condvar.wait(guard).unwrap();
+            guard = self.shared.condvar.wait(guard).unwrap();
         }
         let found_slot = Self::find_slot(&mut self.slots).expect("No slot seems to be posted");
         *guard = false;
@@ -75,8 +98,10 @@ impl Receiver {
     }
     pub fn new() -> Self {
         Receiver {
-            condvar: Condvar::new(),
-            mutex: Mutex::new(false),
+            shared: Arc::new(Shared {
+                lock: Mutex::new(false),
+                condvar: Condvar::new(),
+            }),
             slots: Vec::new(),
         }
     }
