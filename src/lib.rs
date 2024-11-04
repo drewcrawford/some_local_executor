@@ -110,14 +110,19 @@ impl<'tasks> Executor<'tasks> {
     Returns a reference to a receiver that can be [continuation_type::Receiver::park]ed to wait for more work to be available.
     */
     pub fn do_some(&mut self)  {
+
         let mut receiver = self.wake_receiver.take().expect("Receiver is not available");
 
         let attempt_tasks = self.ready_for_poll.drain(..).collect::<Vec<_>>();
         let _interval = logwise::perfwarn_begin!("do_some does not currently sort tasks well");
         for mut task in attempt_tasks {
             let mut context = Context::from_waker(&task.waker);
-
+            let logwise_task = logwise::context::Context::new_task(Some(logwise::context::Context::current()), "single_threaded_executor::do_some");
+            let context_id = logwise_task.context_id();
+            logwise_task.set_current();
+            logwise::debuginternal_sync!("Polling task {id} {label}", id=logwise::privacy::IPromiseItsNotPrivate(task.task_id), label=task.task.label());
             let e = task.task.as_mut().poll(&mut context, self);
+
             match e {
                 std::task::Poll::Ready(_) => {
                     // do nothing; drop the future
@@ -127,16 +132,23 @@ impl<'tasks> Executor<'tasks> {
                     self.waiting_for_wake.push(task);
                 }
             }
+            logwise::context::Context::pop(context_id);
         }
+
         self.wake_receiver = Some(receiver);
+        drop(_interval);
     }
     pub fn park_if_needed(&mut self) {
         if self.ready_for_poll.is_empty() {
             let mut receiver = self.wake_receiver.take().expect("Receiver is not available");
             let task_id = receiver.recv_park();
             //remove the first value from waiting_for_wake that has the same task_id
-            let pos = self.waiting_for_wake.iter().position(|x| x.task_id == task_id).expect("Task ID not found");
-            let task = self.waiting_for_wake.remove(pos);
+            let task = {
+                let _interval = logwise::perfwarn_begin!("O(n) search for task_id");
+
+                let pos = self.waiting_for_wake.iter().position(|x| x.task_id == task_id).expect("Task ID not found");
+                self.waiting_for_wake.remove(pos)
+            };
             self.ready_for_poll.push(task);
 
             self.wake_receiver = Some(receiver);
