@@ -14,7 +14,7 @@ use crate::channel::{Receiver, Sender};
 use crate::Executor;
 
 pub(crate) struct Shared {
-    pending_tasks: Mutex<Vec<Box<dyn DynSpawnedTask<SomeExecutorAdapter>>>>,
+    pending_tasks: Mutex<Vec<Box<dyn for<'a> DynSpawnedTask<Executor<'a>>>>>,
     new_pending_task_sender: Sender,
 }
 impl Shared {
@@ -25,6 +25,9 @@ impl Shared {
             new_pending_task_sender: sender,
 
         }
+    }
+    pub fn take_pending_tasks(&self) -> Vec<Box<dyn for<'a> DynSpawnedTask<Executor<'a>>>> {
+        self.pending_tasks.lock().unwrap().drain(..).collect()
     }
 }
 
@@ -99,6 +102,10 @@ impl SomeExecutorExt for SomeExecutorAdapter {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use some_executor::observer::Observation;
     use some_executor::SomeExecutor;
     use some_executor::task::Configuration;
     use crate::Executor;
@@ -112,9 +119,40 @@ mod tests {
             println!("Hello, world!");
         }, Configuration::default());
 
-        let o = adapter.spawn(task);
 
+        let o = adapter.spawn(task);
+        assert_eq!(o.observe(), Observation::Pending);
         ex.drain();
+        assert_eq!(o.observe(), Observation::Ready(()));
+        assert_eq!(o.observe(), Observation::Done);
+
+    }
+
+    #[test] fn spawn_task_wake() {
+        struct F(bool);
+        impl Future for F {
+            type Output = ();
+
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                if self.0 {
+                    Poll::Ready(())
+                } else {
+                    self.0 = true;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            }
+        }
+        let mut ex = Executor::new();
+        let mut adapter = SomeExecutorAdapter::new(&mut ex);
+
+        let task = some_executor::task::Task::without_notifications("spawn_task".to_string(), F(false), Configuration::default());
+
+        let o = adapter.spawn(task);
+        assert_eq!(o.observe(), Observation::Pending);
+        ex.drain();
+        assert_eq!(o.observe(), Observation::Ready(()));
+        assert_eq!(o.observe(), Observation::Done);
 
     }
 }

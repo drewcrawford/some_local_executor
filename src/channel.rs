@@ -16,7 +16,6 @@ Requirements are:
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use some_executor::task::TaskID;
-use crate::channel::FindSlot::FoundSlot;
 
 //We borrow the high values to represent our own internal state.
 //TASK_ID is known not to use MAX, it can use the others.  But regardless
@@ -104,6 +103,8 @@ impl Receiver {
                             //ignore
                         }
                         NEW_TASK_SUBMITTED => {
+                            //make the slot blank again, so that the message can be resent.
+                            arc.store(BLANK_SLOT, std::sync::atomic::Ordering::Relaxed);
                             return FindSlot::FoundTaskSubmitted;
                         }
                         a if a < INVALID_TASK_ID => {

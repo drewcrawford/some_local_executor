@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 use some_executor::{LocalExecutorExt, SomeLocalExecutor};
 use some_executor::observer::{ExecutorNotified, Observer, ObserverNotified};
-use some_executor::task::{DynLocalSpawnedTask, Task, TaskID};
+use some_executor::task::{DynLocalSpawnedTask, DynSpawnedTask, Task, TaskID};
 use crate::channel::{FindSlot, Sender};
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
@@ -69,6 +69,13 @@ struct SubmittedTask<'task> {
     task_id: TaskID
 }
 
+struct SubmittedRemoteTask<'a> {
+    task: Pin<Box<dyn DynSpawnedTask<Executor<'a>>>>,
+    ///Providing a stable Waker for each task is optimal.
+    waker: Waker,
+    task_id: TaskID
+}
+
 impl<'executor> SubmittedTask<'executor> {
     fn new(task: Pin<Box<(dyn DynLocalSpawnedTask<Executor<'executor>> + 'executor)>>, sender: Sender) -> Self {
         let context = Arc::new(WakeContext{
@@ -90,13 +97,36 @@ impl<'executor> SubmittedTask<'executor> {
     }
 }
 
+impl<'task> SubmittedRemoteTask<'task> {
+    fn new(task: Pin<Box<dyn DynSpawnedTask<Executor<'task>>>>, sender: Sender) -> Self {
+        let context = Arc::new(WakeContext {
+            sender
+        });
+        let context_raw = Arc::into_raw(context);
+        let waker = unsafe {
+            // we effectively rely on the Send/Sync property of WakeContext here.
+            // fortunately we can check it at compile time
+            assert_send_sync::<WakeContext>();
+            Waker::from_raw(RawWaker::new(context_raw as *const (), &VTABLE))
+        };
+        let task_id = task.task_id();
+        SubmittedRemoteTask {
+            task: task,
+            waker,
+            task_id,
+        }
+    }
+}
+
 
 
 
 pub struct Executor<'tasks> {
 
     ready_for_poll: Vec<SubmittedTask<'tasks>>,
+    ready_for_poll_remote: Vec<SubmittedRemoteTask<'tasks>>,
     waiting_for_wake: Vec<SubmittedTask<'tasks>>,
+    waiting_for_wake_remote: Vec<SubmittedRemoteTask<'tasks>>,
 
     //slot so we can take
     wake_receiver: Option<channel::Receiver>,
@@ -111,7 +141,9 @@ impl<'tasks> Executor<'tasks> {
         let adapter_shared = Arc::new(some_executor_adapter::Shared::new(&mut wake_receiver));
         Executor {
             ready_for_poll: Vec::new(),
+            ready_for_poll_remote: Vec::new(),
             waiting_for_wake: Vec::new(),
+            waiting_for_wake_remote: Vec::new(),
             wake_receiver: Some(wake_receiver),
             adapter_shared,
         }
@@ -147,26 +179,60 @@ impl<'tasks> Executor<'tasks> {
             logwise::context::Context::pop(context_id);
         }
 
+        let attempt_remote_tasks = self.ready_for_poll_remote.drain(..).collect::<Vec<_>>();
+        for mut task in attempt_remote_tasks {
+            let mut context = Context::from_waker(&task.waker);
+            let logwise_task = logwise::context::Context::new_task(Some(logwise::context::Context::current()), "single_threaded_executor::do_some");
+            let context_id = logwise_task.context_id();
+            logwise_task.set_current();
+            logwise::debuginternal_sync!("Polling task {id} {label}", id=logwise::privacy::IPromiseItsNotPrivate(task.task.task_id()), label=task.task.label());
+            let e = task.task.as_mut().poll(&mut context, None);
+
+            match e {
+                std::task::Poll::Ready(_) => {
+                    // do nothing; drop the future
+                }
+                std::task::Poll::Pending => {
+                    //need to retain the task
+                    self.waiting_for_wake_remote.push(task);
+                }
+            }
+            logwise::context::Context::pop(context_id);
+        }
+
         self.wake_receiver = Some(receiver);
         drop(_interval);
     }
     pub fn park_if_needed(&mut self) {
-        if self.ready_for_poll.is_empty() {
+        if !self.has_unfinished_tasks() { return }
+
+        if self.ready_for_poll.is_empty() && self.ready_for_poll_remote.is_empty() {
             let mut receiver = self.wake_receiver.take().expect("Receiver is not available");
             let task_id = receiver.recv_park();
             match task_id {
                 FindSlot::FoundSlot(task_id) => {
-                    let task = {
+                    {
                         let _interval = logwise::perfwarn_begin!("O(n) search for task_id");
 
-                        let pos = self.waiting_for_wake.iter().position(|x| x.task_id == task_id).expect("Task ID not found");
-                        self.waiting_for_wake.remove(pos)
+                        if let Some(pos) = self.waiting_for_wake.iter().position(|x| x.task_id == task_id) {
+                            let task = self.waiting_for_wake.remove(pos);
+                            self.ready_for_poll.push(task);
+                        }
+                        else if let Some(pos) = self.waiting_for_wake_remote.iter().position(|x| x.task_id == task_id) {
+                            let task = self.waiting_for_wake_remote.remove(pos);
+                            self.ready_for_poll_remote.push(task);
+                        }
+                        else {
+                            unreachable!("Task ID not found");
+                        }
                     };
-                    self.ready_for_poll.push(task);
 
                 }
                 FindSlot::FoundTaskSubmitted => {
-                    todo!()
+                    for task in self.adapter_shared.take_pending_tasks() {
+                        let sender = Sender::with_receiver(&mut receiver, task.task_id());
+                        self.ready_for_poll_remote.push(SubmittedRemoteTask::new(Box::into_pin(task), sender));
+                    }
                 }
                 FindSlot::NoSlot => {
                     unreachable!("spurious wakeup")
@@ -195,7 +261,11 @@ impl<'tasks> Executor<'tasks> {
     */
     pub fn has_unfinished_tasks(&self) -> bool {
 
-        !self.ready_for_poll.is_empty() || !self.waiting_for_wake.is_empty() || self.wake_receiver.as_ref().expect("No receiver").has_data()
+        !self.ready_for_poll.is_empty()
+            || !self.ready_for_poll_remote.is_empty()
+            || !self.waiting_for_wake.is_empty()
+            || !self.waiting_for_wake_remote.is_empty()
+            || self.wake_receiver.as_ref().expect("No receiver").has_data()
     }
 
     fn enqueue_task(&mut self, task: Pin<Box<(dyn DynLocalSpawnedTask<Executor<'tasks>> + 'tasks)>>) {
