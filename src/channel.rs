@@ -130,6 +130,9 @@ impl Receiver {
         *guard = false;
         found_slot
     }
+    pub fn has_data(&self) -> bool {
+        *self.shared.lock.lock().unwrap()
+    }
     pub fn new() -> Self {
         Receiver {
             shared: Arc::new(Shared {

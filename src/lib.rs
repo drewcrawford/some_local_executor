@@ -194,7 +194,8 @@ impl<'tasks> Executor<'tasks> {
     Returns true if there are tasks that are not yet complete.
     */
     pub fn has_unfinished_tasks(&self) -> bool {
-        !self.ready_for_poll.is_empty() || !self.waiting_for_wake.is_empty()
+
+        !self.ready_for_poll.is_empty() || !self.waiting_for_wake.is_empty() || self.wake_receiver.as_ref().expect("No receiver").has_data()
     }
 
     fn enqueue_task(&mut self, task: Pin<Box<(dyn DynLocalSpawnedTask<Executor<'tasks>> + 'tasks)>>) {
