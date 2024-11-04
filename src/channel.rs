@@ -26,7 +26,7 @@ const NEW_TASK_SUBMITTED: u64 = u64::MAX - 1;
 const INVALID_TASK_ID: u64 = NEW_TASK_SUBMITTED;
 
 pub struct Sender{
-    task_id: TaskID,
+    task_id: u64,
     slot: Arc<AtomicU64>,
     shared: Arc<Shared>,
 }
@@ -48,13 +48,24 @@ impl Sender {
         self.send_by_ref()
     }
 
+    pub fn with_receiver_for_task_submit(receiver: &mut Receiver) -> Self {
+        let new_slot = Arc::new(AtomicU64::new(BLANK_SLOT));
+        let new_slot_recv = Arc::downgrade(&new_slot);
+        receiver.slots.push(new_slot_recv);
+        Sender {
+            task_id: NEW_TASK_SUBMITTED,
+            slot: new_slot,
+            shared: receiver.shared.clone(),
+        }
+    }
+
     pub fn with_receiver(receiver: &mut Receiver, task_id: TaskID) -> Self {
         let new_slot = Arc::new(AtomicU64::new(task_id.into()));
         let new_slot_recv = Arc::downgrade(&new_slot);
         assert!(task_id.as_ref() < &INVALID_TASK_ID, "TaskID is too large");
         receiver.slots.push(new_slot_recv);
         Sender {
-            task_id,
+            task_id: task_id.into(),
             slot: new_slot,
             shared: receiver.shared.clone(),
         }

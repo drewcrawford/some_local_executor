@@ -3,20 +3,26 @@ Provides an implementation of [some_executor::SomeExecutorExt].
 */
 
 use std::any::Any;
+use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use some_executor::{DynExecutor, SomeExecutor, SomeExecutorExt};
-use some_executor::observer::{ExecutorNotified, NoNotified, Observer, ObserverNotified};
-use some_executor::task::Task;
+use some_executor::observer::{ExecutorNotified, Observer, ObserverNotified};
+use some_executor::task::{DynSpawnedTask, Task};
+use crate::channel::{Receiver, Sender};
 use crate::Executor;
 
 pub(crate) struct Shared {
-
+    pending_tasks: Mutex<Vec<Box<dyn DynSpawnedTask<SomeExecutorAdapter>>>>,
+    new_pending_task_sender: Sender,
 }
 impl Shared {
-    pub fn new() -> Self {
+    pub fn new(receiver: &mut Receiver) -> Self {
+        let sender = Sender::with_receiver_for_task_submit(receiver);
         Self {
+            pending_tasks: Mutex::new(Vec::new()),
+            new_pending_task_sender: sender,
 
         }
     }
@@ -36,14 +42,18 @@ impl SomeExecutorAdapter {
 }
 
 impl SomeExecutor for SomeExecutorAdapter {
-    type ExecutorNotifier = NoNotified;
+    type ExecutorNotifier = Infallible;
 
     fn spawn<F: Future + Send + 'static, Notifier: ObserverNotified<F::Output> + Send>(&mut self, task: Task<F, Notifier>) -> Observer<F::Output, Self::ExecutorNotifier>
     where
         Self: Sized,
         F::Output: Send
     {
-        todo!()
+        let (task, observer) = task.spawn(self);
+
+        self.shared.pending_tasks.lock().unwrap().push(Box::new(task));
+
+        todo!("actual task");
     }
 
     fn spawn_async<F: Future + Send + 'static, Notifier: ObserverNotified<F::Output> + Send>(&mut self, task: Task<F, Notifier>) -> impl Future<Output=Observer<F::Output, Self::ExecutorNotifier>> + Send + 'static

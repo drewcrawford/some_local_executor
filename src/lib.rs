@@ -6,13 +6,14 @@ mod channel;
 mod some_executor_adapter;
 
 use std::any::Any;
+use std::convert::Infallible;
 use std::future::Future;
 use std::mem::forget;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 use some_executor::{LocalExecutorExt, SomeLocalExecutor};
-use some_executor::observer::{ExecutorNotified, NoNotified, Observer, ObserverNotified};
+use some_executor::observer::{ExecutorNotified, Observer, ObserverNotified};
 use some_executor::task::{DynLocalSpawnedTask, Task, TaskID};
 use crate::channel::{FindSlot, Sender};
 
@@ -106,12 +107,13 @@ pub struct Executor<'tasks> {
 impl<'tasks> Executor<'tasks> {
     pub fn new() -> Self {
 
-        let wake_receiver = channel::Receiver::new();
+        let mut wake_receiver = channel::Receiver::new();
+        let adapter_shared = Arc::new(some_executor_adapter::Shared::new(&mut wake_receiver));
         Executor {
             ready_for_poll: Vec::new(),
             waiting_for_wake: Vec::new(),
             wake_receiver: Some(wake_receiver),
-            adapter_shared: Arc::new(some_executor_adapter::Shared::new()),
+            adapter_shared,
         }
     }
     /**
@@ -131,7 +133,7 @@ impl<'tasks> Executor<'tasks> {
             let context_id = logwise_task.context_id();
             logwise_task.set_current();
             logwise::debuginternal_sync!("Polling task {id} {label}", id=logwise::privacy::IPromiseItsNotPrivate(task.task_id), label=task.task.label());
-            let e = task.task.as_mut().poll(&mut context, self);
+            let e = task.task.as_mut().poll(&mut context, self,None);
 
             match e {
                 std::task::Poll::Ready(_) => {
@@ -211,7 +213,7 @@ impl<'tasks> Executor<'tasks> {
 }
 
 impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
-    type ExecutorNotifier = NoNotified;
+    type ExecutorNotifier = Infallible;
 
     fn spawn_local<F: Future, Notifier: ObserverNotified<F::Output>>(&mut self, task: Task<F, Notifier>) -> Observer<F::Output, Self::ExecutorNotifier>
     where
