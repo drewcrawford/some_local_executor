@@ -6,15 +6,13 @@ mod channel;
 
 use std::any::Any;
 use std::future::Future;
-use std::marker::PhantomData;
 use std::mem::forget;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, RawWaker, RawWakerVTable, Waker};
-use some_executor::{LocalExecutorExt, SomeExecutor, SomeLocalExecutor};
+use some_executor::{LocalExecutorExt, SomeLocalExecutor};
 use some_executor::observer::{ExecutorNotified, NoNotified, Observer, ObserverNotified};
-use some_executor::task::{DynLocalSpawnedTask, SpawnedLocalTask, SpawnedTask, Task, TaskID};
+use some_executor::task::{DynLocalSpawnedTask, Task, TaskID};
 use crate::channel::Sender;
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
@@ -115,7 +113,7 @@ impl<'tasks> Executor<'tasks> {
     */
     pub fn do_some(&mut self)  {
 
-        let mut receiver = self.wake_receiver.take().expect("Receiver is not available");
+        let receiver = self.wake_receiver.take().expect("Receiver is not available");
 
         let attempt_tasks = self.ready_for_poll.drain(..).collect::<Vec<_>>();
         let _interval = logwise::perfwarn_begin!("do_some does not currently sort tasks well");
@@ -163,8 +161,18 @@ impl<'tasks> Executor<'tasks> {
 
     This function will return when all spawned tasks complete.
 */
-    pub fn drain(self) {
-        todo!()
+    pub fn drain(mut self) {
+        while self.has_unfinished_tasks() {
+            self.do_some();
+            self.park_if_needed();
+        }
+    }
+
+    /**
+    Returns true if there are tasks that are not yet complete.
+    */
+    pub fn has_unfinished_tasks(&self) -> bool {
+        !self.ready_for_poll.is_empty() || !self.waiting_for_wake.is_empty()
     }
 
     fn enqueue_task(&mut self, task: Pin<Box<(dyn DynLocalSpawnedTask<Executor<'tasks>> + 'tasks)>>) {
@@ -230,7 +238,7 @@ impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
 #[cfg(test)] mod tests {
     use std::future::Future;
     use std::pin::Pin;
-    use some_executor::observer::{NoNotified, Observation};
+    use some_executor::observer::{Observation};
     use some_executor::SomeLocalExecutor;
     use some_executor::task::{Configuration, Task};
     use crate::{Executor};
