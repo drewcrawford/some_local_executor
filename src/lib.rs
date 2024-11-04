@@ -33,7 +33,14 @@ const VTABLE: RawWakerVTable = RawWakerVTable::new(
             assert_send_sync::<WakeContext>();
             Arc::from_raw(data as *const WakeContext)
         };
-        todo!();
+        match Arc::try_unwrap(context) {
+            Ok(context) => {
+                context.sender.send();
+            }
+            Err(context) => {
+                context.sender.send_by_ref();
+            }
+        }
 
     },
     |data| {
@@ -87,7 +94,6 @@ pub struct Executor<'tasks> {
     ready_for_poll: Vec<SubmittedTask<'tasks>>,
     waiting_for_wake: Vec<SubmittedTask<'tasks>>,
 
-    wake_sender: channel::Sender,
     //slot so we can take
     wake_receiver: Option<channel::Receiver>,
 }
@@ -95,13 +101,11 @@ pub struct Executor<'tasks> {
 impl<'tasks> Executor<'tasks> {
     pub fn new() -> Self {
 
-        let (wake_sender, wake_receiver) = channel::channel();
-
+        let wake_receiver = channel::Receiver::new();
         Executor {
             ready_for_poll: Vec::new(),
             waiting_for_wake: Vec::new(),
             wake_receiver: Some(wake_receiver),
-            wake_sender
         }
     }
     /**
@@ -165,8 +169,8 @@ impl<'tasks> Executor<'tasks> {
 
     fn enqueue_task(&mut self, task: Pin<Box<(dyn DynLocalSpawnedTask<Executor<'tasks>> + 'tasks)>>) {
         if task.poll_after() < std::time::Instant::now() {
-
-            self.ready_for_poll.push(SubmittedTask::new(task, self.wake_sender.clone()));
+            let sender = Sender::with_receiver(self.wake_receiver.as_mut().expect("Receiver is not available"));
+            self.ready_for_poll.push(SubmittedTask::new(task, sender));
         }
         else {
             todo!("Not yet implemented")
