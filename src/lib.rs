@@ -14,8 +14,7 @@ use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 use some_executor::{LocalExecutorExt, SomeExecutor, SomeLocalExecutor};
 use some_executor::observer::{ExecutorNotified, NoNotified, Observer, ObserverNotified};
 use some_executor::task::{DynLocalSpawnedTask, SpawnedLocalTask, SpawnedTask, Task};
-
-
+use crate::continuation_type::Parker;
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
     |data| {
@@ -61,9 +60,13 @@ impl<'executor> SubmittedTask<'executor> {
 
 
 pub struct Executor<'tasks> {
-    tasks: Vec<SubmittedTask<'tasks>>,
-    wake_receiver: continuation_type::Receiver,
+
+    ready_for_poll: Vec<SubmittedTask<'tasks>>,
+    waiting_for_wake: Vec<SubmittedTask<'tasks>>,
+
     wake_sender: continuation_type::Sender,
+    //slot so we can take
+    wake_receiver: Option<continuation_type::Receiver>,
 }
 
 impl<'tasks> Executor<'tasks> {
@@ -72,8 +75,9 @@ impl<'tasks> Executor<'tasks> {
         let (wake_sender, wake_receiver) = continuation_type::blocking_continuation_type();
 
         Executor {
-            tasks: Vec::new(),
-            wake_receiver,
+            ready_for_poll: Vec::new(),
+            waiting_for_wake: Vec::new(),
+            wake_receiver: Some(wake_receiver),
             wake_sender
         }
     }
@@ -82,34 +86,29 @@ impl<'tasks> Executor<'tasks> {
 
     Returns a reference to a receiver that can be [continuation_type::Receiver::park]ed to wait for more work to be available.
     */
-    pub fn do_some(&mut self) -> &continuation_type::Receiver {
-        let attempt_tasks = self.tasks.drain(..).collect::<Vec<_>>();
+    pub fn do_some(&mut self) -> continuation_type::Parker {
+        let mut receiver = self.wake_receiver.take().expect("Receiver is not available");
+        let transaction = receiver.will_park();
 
-
-        let mut new_tasks = Vec::new();
-        let now = std::time::Instant::now();
+        let attempt_tasks = self.ready_for_poll.drain(..).collect::<Vec<_>>();
+        let _interval = logwise::perfwarn_begin!("do_some does not currently sort tasks well");
         for mut task in attempt_tasks {
-            if task.task.poll_after() > now {
-                new_tasks.push(task);
-                continue;
-            }
-
             let mut context = Context::from_waker(&task.waker);
 
             let e = task.task.as_mut().poll(&mut context, self);
             match e {
                 std::task::Poll::Ready(_) => {
-                    // do nothing
+                    // do nothing; drop the future
                 }
                 std::task::Poll::Pending => {
-
+                    //need to retain the task
+                    self.waiting_for_wake.push(task);
                 }
             }
         }
-
-        self.tasks = new_tasks;
-
-        &self.wake_receiver
+        let parker = Parker::finalize_transaction(transaction);
+        self.wake_receiver = Some(receiver);
+        parker
     }
     /**
     Drains the executor. After this call, the executor can no longer be used.
@@ -118,6 +117,15 @@ impl<'tasks> Executor<'tasks> {
 */
     pub fn drain(self) {
         todo!()
+    }
+
+    fn enqueue_task(&mut self, task: SubmittedTask<'tasks>) {
+        if task.task.poll_after() < std::time::Instant::now() {
+            self.ready_for_poll.push(task);
+        }
+        else {
+            todo!("Not yet implemented")
+        }
     }
 }
 
@@ -131,7 +139,7 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
         <F as Future>::Output: Unpin,
     {
         let (task,observer) = task.spawn_local(self);
-        self.tasks.push(SubmittedTask::new(Box::pin(task)));
+        self.enqueue_task(SubmittedTask::new(Box::pin(task)));
         observer
     }
 
@@ -142,20 +150,20 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
     {
         async {
             let (spawn,observer)  = task.spawn_local(self);
-            self.tasks.push(SubmittedTask::new(Box::pin(spawn)));
+            self.enqueue_task(SubmittedTask::new(Box::pin(spawn)));
             observer
         }
     }
     fn spawn_local_objsafe(&mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Observer<Box<dyn Any>, Box<dyn ExecutorNotified>> {
         let (spawn, observer) = task.spawn_local_objsafe(self);
-        self.tasks.push(SubmittedTask::new(Box::pin(spawn)));
+        self.enqueue_task(SubmittedTask::new(Box::pin(spawn)));
         observer
     }
 
     fn spawn_local_objsafe_async<'executor>(&'executor mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Box<dyn Future<Output=Observer<Box<dyn Any>, Box<dyn ExecutorNotified>>> + 'executor> {
         Box::new(async {
             let (spawn, observer) = task.spawn_local_objsafe(self);
-            self.tasks.push(SubmittedTask::new(Box::pin(spawn)));
+            self.enqueue_task(SubmittedTask::new(Box::pin(spawn)));
             observer
         })
     }
@@ -181,9 +189,10 @@ impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
     struct PollCounter(u8);
     impl Future for PollCounter {
         type Output = ();
-        fn poll(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
             let this = self.get_mut();
             this.0 += 1;
+            cx.waker().clone().wake();
             if this.0 < 10 {
                 std::task::Poll::Pending
             }
