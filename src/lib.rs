@@ -42,7 +42,11 @@ const VTABLE: RawWakerVTable = RawWakerVTable::new(
 
     },
     |data| {
-        todo!()
+       let context = unsafe{
+            Arc::from_raw(data as *const WakeContext)
+        };
+        context.sender.send_by_ref();
+        forget(context);
     },
     |data| {
         unsafe{Arc::from_raw(data as *const WakeContext)}; //drop the arc
@@ -234,6 +238,7 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
 impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
 
 }
+
 
 #[cfg(test)] mod tests {
     use std::future::Future;
