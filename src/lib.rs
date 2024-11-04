@@ -2,7 +2,7 @@
 It's a simple single-threaded executor.
 */
 
-mod continuation_type;
+mod channel;
 
 use std::any::Any;
 use std::future::Future;
@@ -14,8 +14,8 @@ use std::sync::Arc;
 use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 use some_executor::{LocalExecutorExt, SomeExecutor, SomeLocalExecutor};
 use some_executor::observer::{ExecutorNotified, NoNotified, Observer, ObserverNotified};
-use some_executor::task::{DynLocalSpawnedTask, SpawnedLocalTask, SpawnedTask, Task};
-use crate::continuation_type::{Parker, Sender};
+use some_executor::task::{DynLocalSpawnedTask, SpawnedLocalTask, SpawnedTask, Task, TaskID};
+use crate::channel::Sender;
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
     |data| {
@@ -33,7 +33,7 @@ const VTABLE: RawWakerVTable = RawWakerVTable::new(
             assert_send_sync::<WakeContext>();
             Arc::from_raw(data as *const WakeContext)
         };
-        context.sender.signal();
+        todo!();
 
     },
     |data| {
@@ -48,13 +48,14 @@ fn assert_send_sync<T: Send + Sync>() {}
 
 //wrapped in Arc
 struct WakeContext {
-    sender: continuation_type::Sender,
+    sender: Sender,
 }
 
 struct SubmittedTask<'task> {
     task: Pin<Box<dyn DynLocalSpawnedTask<Executor<'task>> + 'task>>,
     ///Providing a stable Waker for each task is optimal.
     waker: Waker,
+    task_id: TaskID
 }
 
 impl<'executor> SubmittedTask<'executor> {
@@ -69,9 +70,11 @@ impl<'executor> SubmittedTask<'executor> {
             assert_send_sync::<WakeContext>();
             Waker::from_raw(RawWaker::new(context_raw as *const (), &VTABLE))
         };
+        let task_id = task.task_id();
         SubmittedTask {
-            task,
+            task: task,
             waker,
+            task_id,
         }
     }
 }
@@ -84,15 +87,15 @@ pub struct Executor<'tasks> {
     ready_for_poll: Vec<SubmittedTask<'tasks>>,
     waiting_for_wake: Vec<SubmittedTask<'tasks>>,
 
-    wake_sender: continuation_type::Sender,
+    wake_sender: channel::Sender,
     //slot so we can take
-    wake_receiver: Option<continuation_type::Receiver>,
+    wake_receiver: Option<channel::Receiver>,
 }
 
 impl<'tasks> Executor<'tasks> {
     pub fn new() -> Self {
 
-        let (wake_sender, wake_receiver) = continuation_type::blocking_continuation_type();
+        let (wake_sender, wake_receiver) = channel::channel();
 
         Executor {
             ready_for_poll: Vec::new(),
@@ -106,9 +109,8 @@ impl<'tasks> Executor<'tasks> {
 
     Returns a reference to a receiver that can be [continuation_type::Receiver::park]ed to wait for more work to be available.
     */
-    pub fn do_some(&mut self) -> continuation_type::Parker {
+    pub fn do_some(&mut self)  {
         let mut receiver = self.wake_receiver.take().expect("Receiver is not available");
-        let transaction = receiver.will_park();
 
         let attempt_tasks = self.ready_for_poll.drain(..).collect::<Vec<_>>();
         let _interval = logwise::perfwarn_begin!("do_some does not currently sort tasks well");
@@ -126,9 +128,19 @@ impl<'tasks> Executor<'tasks> {
                 }
             }
         }
-        let parker = Parker::finalize_transaction(transaction);
         self.wake_receiver = Some(receiver);
-        parker
+    }
+    pub fn park_if_needed(&mut self) {
+        if self.ready_for_poll.is_empty() {
+            let mut receiver = self.wake_receiver.take().expect("Receiver is not available");
+            let task_id = receiver.recv_park();
+            //remove the first value from waiting_for_wake that has the same task_id
+            let pos = self.waiting_for_wake.iter().position(|x| x.task_id == task_id).expect("Task ID not found");
+            let task = self.waiting_for_wake.remove(pos);
+            self.ready_for_poll.push(task);
+
+            self.wake_receiver = Some(receiver);
+        }
     }
     /**
     Drains the executor. After this call, the executor can no longer be used.
@@ -235,9 +247,9 @@ impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
 
         let observer = executor.spawn_local(task);
         for _ in 0..9 {
-            let park = executor.do_some();
+            executor.do_some();
             assert_eq!(observer.observe(), Observation::Pending);
-            park.park();
+            executor.park_if_needed();
         }
 
     }
