@@ -169,7 +169,7 @@ impl<'tasks> Executor<'tasks> {
 
     fn enqueue_task(&mut self, task: Pin<Box<(dyn DynLocalSpawnedTask<Executor<'tasks>> + 'tasks)>>) {
         if task.poll_after() < std::time::Instant::now() {
-            let sender = Sender::with_receiver(self.wake_receiver.as_mut().expect("Receiver is not available"));
+            let sender = Sender::with_receiver(self.wake_receiver.as_mut().expect("Receiver is not available"), task.task_id());
             self.ready_for_poll.push(SubmittedTask::new(task, sender));
         }
         else {
