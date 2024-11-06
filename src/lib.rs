@@ -18,6 +18,8 @@ use some_executor::task::{DynLocalSpawnedTask, DynSpawnedTask, TaskID};
 use crate::channel::{FindSlot, Sender};
 
 pub type Task<F,N> = some_executor::task::Task<F,N>;
+pub type Configuration = some_executor::task::Configuration;
+
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
     |data| {
