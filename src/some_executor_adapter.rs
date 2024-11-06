@@ -31,6 +31,7 @@ impl Shared {
     }
 }
 
+#[derive(Clone)]
 pub struct SomeExecutorAdapter {
     shared: Arc<Shared>,
 }
@@ -90,11 +91,7 @@ impl SomeExecutor for SomeExecutorAdapter {
     }
 }
 
-impl Clone for SomeExecutorAdapter {
-    fn clone(&self) -> Self {
-        todo!()
-    }
-}
+
 
 impl SomeExecutorExt for SomeExecutorAdapter {
 
