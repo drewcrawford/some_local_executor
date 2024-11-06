@@ -1,5 +1,5 @@
 [package]
-name = "single_threaded_executor"
+name = "some_local_executor"
 version = "0.1.0"
 edition = "2021"
 
