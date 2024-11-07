@@ -1,5 +1,8 @@
 /*!
-Provides an implementation of [some_executor::SomeExecutorExt].
+Provides an implementation of [some_executor::SomeExecutorExt], so that the executor
+can be used from multiple threads.
+
+Using the adapter has some overhead, but it provides strong compatibility.
 */
 
 use std::any::Any;
@@ -13,6 +16,7 @@ use some_executor::task::{DynSpawnedTask, Task};
 use crate::channel::{Receiver, Sender};
 use crate::Executor;
 
+#[derive(Debug)]
 pub(crate) struct Shared {
     pending_tasks: Mutex<Vec<Box<dyn for<'a> DynSpawnedTask<Executor<'a>>>>>,
     new_pending_task_sender: Sender,

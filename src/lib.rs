@@ -1,25 +1,35 @@
 /*!
 It's a simple single-threaded executor.
+
+This is a reference executor for the [https://sealedabstract.com/code/some_executor](some_executor) crate.
+
+By leveraging the features `some_executor`, this project provides a rich API while still being extremely simple to implement:
+1.  Tasks and cancellation
+2.  Observers and notifications
+3.  Priorities and scheduling
+4.  task-locals
 */
 
+use some_executor::SomeLocalExecutor;
+
 mod channel;
-mod some_executor_adapter;
+pub mod some_executor_adapter;
 
 use std::any::Any;
 use std::convert::Infallible;
+use std::fmt::Debug;
 use std::future::Future;
 use std::mem::forget;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, RawWaker, RawWakerVTable, Waker};
-use some_executor::{LocalExecutorExt, SomeLocalExecutor};
+use some_executor::{LocalExecutorExt};
 use some_executor::observer::{ExecutorNotified, Observer, ObserverNotified};
 use some_executor::task::{DynLocalSpawnedTask, DynSpawnedTask, TaskID};
 use crate::channel::{FindSlot, Sender};
 
 pub type Task<F,N> = some_executor::task::Task<F,N>;
 pub type Configuration = some_executor::task::Configuration;
-
 
 const VTABLE: RawWakerVTable = RawWakerVTable::new(
     |data| {
@@ -73,11 +83,27 @@ struct SubmittedTask<'task> {
     task_id: TaskID
 }
 
+impl Debug for SubmittedTask<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubmittedTask")
+            .field("task_id", &self.task_id)
+            .finish()
+    }
+}
+
 struct SubmittedRemoteTask<'a> {
     task: Pin<Box<dyn DynSpawnedTask<Executor<'a>>>>,
     ///Providing a stable Waker for each task is optimal.
     waker: Waker,
     task_id: TaskID
+}
+
+impl Debug for SubmittedRemoteTask<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubmittedRemoteTask")
+            .field("task_id", &self.task_id)
+            .finish()
+    }
 }
 
 impl<'executor> SubmittedTask<'executor> {
@@ -124,7 +150,13 @@ impl<'task> SubmittedRemoteTask<'task> {
 
 
 
+/**
+The main executor type.
 
+The lifetime parameter `'tasks` is the lifetime of the tasks that are spawned on this executor, that is
+the lifetime of any data they may borrow, in case they are spawned with a reference to that data.
+*/
+#[derive(Debug)]
 pub struct Executor<'tasks> {
 
     ready_for_poll: Vec<SubmittedTask<'tasks>>,
@@ -139,6 +171,9 @@ pub struct Executor<'tasks> {
 }
 
 impl<'tasks> Executor<'tasks> {
+    /**
+    Creates a new executor.
+    */
     pub fn new() -> Self {
 
         let mut wake_receiver = channel::Receiver::new();
@@ -155,7 +190,7 @@ impl<'tasks> Executor<'tasks> {
     /**
     Runs the executor until there is no more immediate work to be performed.
 
-    Returns a reference to a receiver that can be [continuation_type::Receiver::park]ed to wait for more work to be available.
+    It is intended ot be called in a loop with [Self::park_if_needed].
     */
     pub fn do_some(&mut self)  {
 
@@ -207,6 +242,9 @@ impl<'tasks> Executor<'tasks> {
         self.wake_receiver = Some(receiver);
         drop(_interval);
     }
+    /**
+    Parks the thread if there are no tasks to be performed, until tasks are ready to be performed again.
+*/
     pub fn park_if_needed(&mut self) {
         if !self.has_unfinished_tasks() { return }
 
@@ -287,6 +325,13 @@ impl<'tasks> Executor<'tasks> {
     }
 }
 
+/**
+Implementation of the `SomeLocalExecutor` trait from the [some_executor](http://sealedabstract.com/code/some_executor) project.
+
+This is the main interface to spawn tasks onto the executor.
+
+For details on this trait, see [SomeLocalExecutor].
+*/
 impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
     type ExecutorNotifier = Infallible;
 
@@ -335,6 +380,9 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
 impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
 
 }
+
+//executor boilerplate
+
 
 
 #[cfg(test)] mod tests {

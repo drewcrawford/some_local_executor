@@ -24,12 +24,14 @@ const BLANK_SLOT: u64 = u64::MAX;
 const NEW_TASK_SUBMITTED: u64 = u64::MAX - 1;
 const INVALID_TASK_ID: u64 = NEW_TASK_SUBMITTED;
 
+#[derive(Debug)]
 pub struct Sender{
     task_id: u64,
     slot: Arc<AtomicU64>,
     shared: Arc<Shared>,
 }
 
+#[derive(Debug)]
 struct Shared {
     lock: Mutex<bool>,
     condvar: Condvar,
@@ -71,6 +73,7 @@ impl Sender {
     }
 }
 
+#[derive(Debug)]
 pub struct Receiver {
     shared: Arc<Shared>,
     //holds one slot per open sender.
