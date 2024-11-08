@@ -1,7 +1,15 @@
 [package]
 name = "some_local_executor"
 version = "0.1.0"
+authors = ["Drew Crawford <drew@sealedabstract.com>"]
+description = "A simple local executor"
 edition = "2021"
+homepage = "https://sealedabstract.com/code/some_local_executor"
+license = "MIT OR Apache-2.0"
+categories = ["asynchronous","concurrency"]
+keywords = ["async", "await","non-blocking", "futures"]
+exclude = [".*"]
+rust-version = "1.75.0"
 
 [dependencies]
 some_executor = "0.2.0"

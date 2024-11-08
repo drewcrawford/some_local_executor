@@ -1,3 +1,4 @@
+//SPDX-License-Identifier: MIT OR Apache-2.0
 /*!
 Provides an implementation of [some_executor::SomeExecutorExt], so that the executor
 can be used from multiple threads.
