@@ -1,6 +1,6 @@
 # some_local_executor
 
-
+![logo](art/logo.png)
 
 It's a simple single-threaded executor.
 
