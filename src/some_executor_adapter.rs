@@ -8,6 +8,7 @@ Using the adapter has some overhead, but it provides strong compatibility.
 use std::any::Any;
 use std::convert::Infallible;
 use std::future::Future;
+use std::hash::Hash;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use some_executor::{DynExecutor, SomeExecutor, SomeExecutorExt};
@@ -34,13 +35,18 @@ impl Shared {
         self.pending_tasks.lock().unwrap().drain(..).collect()
     }
 }
-
-#[derive(Clone)]
+/**
+A type that implements [SomeExecutor] by using an [Executor] as the backend.
+*/
+#[derive(Debug,Clone)]
 pub struct SomeExecutorAdapter {
     shared: Arc<Shared>,
 }
 
 impl SomeExecutorAdapter {
+    /**
+    Creates a new adapter that uses the given executor as the backend.
+    */
     pub fn new(executor: &mut Executor) -> Self {
         let shared = executor.adapter_shared().clone();
         Self {
@@ -49,6 +55,11 @@ impl SomeExecutorAdapter {
     }
 }
 
+/**
+Implements the [SomeExecutor] trait for [SomeExecutorAdapter].
+
+For more details, see trait documentation.
+*/
 impl SomeExecutor for SomeExecutorAdapter {
     type ExecutorNotifier = Infallible;
 
@@ -100,6 +111,32 @@ impl SomeExecutor for SomeExecutorAdapter {
 impl SomeExecutorExt for SomeExecutorAdapter {
 
 }
+
+//boilerplate.
+impl PartialEq for SomeExecutorAdapter {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+}
+
+impl Eq for SomeExecutorAdapter {
+
+}
+
+impl Hash for SomeExecutorAdapter {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.shared).hash(state);
+    }
+}
+
+//default - no, we need the backend.
+
+impl From<&mut Executor<'_>> for SomeExecutorAdapter {
+    fn from(executor: &mut Executor) -> Self {
+        Self::new(executor)
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -155,5 +192,10 @@ mod tests {
         assert_eq!(o.observe(), Observation::Ready(()));
         assert_eq!(o.observe(), Observation::Done);
 
+    }
+
+    #[test] fn test_send_sync() {
+        fn is_send_sync<T: Send + Sync>() {}
+        is_send_sync::<SomeExecutorAdapter>();
     }
 }

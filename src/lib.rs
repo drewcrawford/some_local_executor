@@ -1,13 +1,15 @@
 /*!
 It's a simple single-threaded executor.
 
-This is a reference executor for the [https://sealedabstract.com/code/some_executor](some_executor) crate.
+This is a reference executor for the [some_executor](https://sealedabstract.com/code/some_executor) crate.
 
-By leveraging the features `some_executor`, this project provides a rich API while still being extremely simple to implement:
+By leveraging the features in `some_executor`, this project provides a rich API:
 1.  Tasks and cancellation
 2.  Observers and notifications
 3.  Priorities and scheduling
 4.  task-locals
+
+...in about a page of code.
 */
 
 use some_executor::SomeLocalExecutor;
@@ -381,8 +383,20 @@ impl<'tasks> LocalExecutorExt<'tasks> for Executor<'tasks> {
 
 }
 
-//executor boilerplate
+/*executor boilerplate
 
+I think we don't especially want clone, eq, hash, ord
+
+Default makes sense
+ */
+
+impl Default for Executor<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+//I think it's not really possible to do from for a future, we need to return the observer type.
 
 
 #[cfg(test)] mod tests {
