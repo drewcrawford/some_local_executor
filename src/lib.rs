@@ -10,6 +10,9 @@ By leveraging the features in `some_executor`, this project provides a rich API:
 4.  task-locals
 
 ...in about a page of code.
+
+By writing code against this executor, you're basically compatible with every other executor supported
+by `some_executor`.
 */
 
 use some_executor::SomeLocalExecutor;
