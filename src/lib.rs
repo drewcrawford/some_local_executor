@@ -341,21 +341,23 @@ For details on this trait, see [SomeLocalExecutor].
 impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
     type ExecutorNotifier = Infallible;
 
-    fn spawn_local<F: Future, Notifier: ObserverNotified<F::Output>>(&mut self, task: Task<F, Notifier>) -> Observer<F::Output, Self::ExecutorNotifier>
+    fn spawn_local<F: Future, Notifier: ObserverNotified<F::Output>>(&mut self, task: Task<F, Notifier>) -> impl Observer<Value=F::Output>
     where
         Self: Sized,
         F: 'future,
         <F as Future>::Output: Unpin,
+        <F as Future>::Output: 'static,
     {
         let (task,observer) = task.spawn_local(self);
         self.enqueue_task(Box::pin(task));
         observer
     }
 
-    fn spawn_local_async<F: Future, Notifier: ObserverNotified<F::Output>>(&mut self, task: Task<F, Notifier>) -> impl Future<Output=Observer<F::Output, Self::ExecutorNotifier>>
+    fn spawn_local_async<F: Future, Notifier: ObserverNotified<F::Output>>(&mut self, task: Task<F, Notifier>) -> impl Future<Output=impl Observer<Value=F::Output>>
     where
         Self: Sized,
         F: 'future,
+        <F as Future>::Output: 'static,
     {
         async {
             let (spawn,observer)  = task.spawn_local(self);
@@ -363,17 +365,17 @@ impl<'future> SomeLocalExecutor<'future> for Executor<'future> {
             observer
         }
     }
-    fn spawn_local_objsafe(&mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Observer<Box<dyn Any>, Box<dyn ExecutorNotified>> {
+    fn spawn_local_objsafe(&mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Box<dyn Observer<Value=Box<dyn Any>>> {
         let (spawn, observer) = task.spawn_local_objsafe(self);
         self.enqueue_task(Box::pin(spawn));
-        observer
+        Box::new(observer) as Box<dyn Observer<Value=Box<dyn Any>>>
     }
 
-    fn spawn_local_objsafe_async<'executor>(&'executor mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Box<dyn Future<Output=Observer<Box<dyn Any>, Box<dyn ExecutorNotified>>> + 'executor> {
+    fn spawn_local_objsafe_async<'s>(&'s mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any>>>>, Box<dyn ObserverNotified<(dyn Any + 'static)>>>) -> Box<dyn Future<Output=Box<dyn Observer<Value=Box<dyn Any>>>> + 's> {
         Box::new(async {
             let (spawn, observer) = task.spawn_local_objsafe(self);
             self.enqueue_task(Box::pin(spawn));
-            observer
+            Box::new(observer) as Box<dyn Observer<Value=Box<dyn Any>>>
         })
     }
 
@@ -410,6 +412,7 @@ impl Default for Executor<'_> {
     use some_executor::SomeLocalExecutor;
     use some_executor::task::{Configuration, Task};
     use crate::{Executor};
+    use some_executor::observer::Observer;
 
     struct PollCounter(u8);
     impl Future for PollCounter {

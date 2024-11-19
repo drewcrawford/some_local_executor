@@ -12,5 +12,6 @@ exclude = [".*"]
 rust-version = "1.75.0"
 
 [dependencies]
-some_executor = "0.2.0"
+some_executor = { path = "../some_executor"}
+#some_executor = "0.2.0"
 logwise = "~0"

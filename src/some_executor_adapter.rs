@@ -64,7 +64,7 @@ For more details, see trait documentation.
 impl SomeExecutor for SomeExecutorAdapter {
     type ExecutorNotifier = Infallible;
 
-    fn spawn<F: Future + Send + 'static, Notifier: ObserverNotified<F::Output> + Send>(&mut self, task: Task<F, Notifier>) -> Observer<F::Output, Self::ExecutorNotifier>
+    fn spawn<F: Future + Send + 'static, Notifier: ObserverNotified<F::Output> + Send>(&mut self, task: Task<F, Notifier>) -> impl Observer<Value=F::Output>
     where
         Self: Sized,
         F::Output: Send
@@ -75,7 +75,7 @@ impl SomeExecutor for SomeExecutorAdapter {
         observer
     }
 
-    fn spawn_async<F: Future + Send + 'static, Notifier: ObserverNotified<F::Output> + Send>(&mut self, task: Task<F, Notifier>) -> impl Future<Output=Observer<F::Output, Self::ExecutorNotifier>> + Send + 'static
+    fn spawn_async<F: Future + Send + 'static, Notifier: ObserverNotified<F::Output> + Send>(&mut self, task: Task<F, Notifier>) -> impl Future<Output=impl Observer<Value=F::Output>> + Send + 'static
     where
         Self: Sized,
         F::Output: Send
@@ -89,11 +89,11 @@ impl SomeExecutor for SomeExecutorAdapter {
         }
     }
 
-    fn spawn_objsafe(&mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any + 'static + Send>> + 'static + Send>>, Box<dyn ObserverNotified<dyn Any + Send> + Send>>) -> Observer<Box<dyn Any + 'static + Send>, Box<dyn ExecutorNotified + 'static + Send>> {
+    fn spawn_objsafe(&mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any + 'static + Send>> + 'static + Send>>, Box<dyn ObserverNotified<dyn Any + Send> + Send>>) -> Box<dyn Observer<Value=Box<dyn Any + Send>>>  {
         let (task, observer) = task.spawn_objsafe(self);
         self.shared.pending_tasks.lock().unwrap().push(Box::new(task));
         self.shared.new_pending_task_sender.send_by_ref();
-        observer
+        Box::new(observer) as Box<dyn Observer<Value=Box<dyn Any + Send>>>
     }
 
     fn clone_box(&self) -> Box<DynExecutor> {
@@ -149,6 +149,7 @@ mod tests {
     use some_executor::task::Configuration;
     use crate::Executor;
     use crate::some_executor_adapter::SomeExecutorAdapter;
+    use some_executor::observer::Observer;
 
     #[test] fn spawn_task() {
         let mut ex = Executor::new();
