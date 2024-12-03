@@ -30,7 +30,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 use some_executor::{LocalExecutorExt};
-use some_executor::observer::{ExecutorNotified, Observer, ObserverNotified};
+use some_executor::observer::{Observer, ObserverNotified};
 use some_executor::task::{DynLocalSpawnedTask, DynSpawnedTask, TaskID};
 use crate::channel::{FindSlot, Sender};
 

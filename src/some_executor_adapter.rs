@@ -13,7 +13,7 @@ use std::hash::Hash;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use some_executor::{DynExecutor, SomeExecutor, SomeExecutorExt};
-use some_executor::observer::{ExecutorNotified, Observer, ObserverNotified};
+use some_executor::observer::{ Observer, ObserverNotified};
 use some_executor::task::{DynSpawnedTask, Task};
 use crate::channel::{Receiver, Sender};
 use crate::Executor;
@@ -75,14 +75,14 @@ impl SomeExecutor for SomeExecutorAdapter {
         observer
     }
 
-    fn spawn_async<F: Future + Send + 'static, Notifier: ObserverNotified<F::Output> + Send>(&mut self, task: Task<F, Notifier>) -> impl Future<Output=impl Observer<Value=F::Output>> + Send + 'static
+    fn spawn_async<'s, F: Future + Send + 'static, Notifier: ObserverNotified<F::Output> + Send>(&'s mut self, task: Task<F, Notifier>) -> impl Future<Output=impl Observer<Value=F::Output>> + Send + 's
     where
         Self: Sized,
-        F::Output: Send
+        F::Output: Send + Unpin,
     {
-        let (task, observer) = task.spawn(self);
-        let move_shared = self.shared.clone();
         async move {
+            let (task, observer) = task.spawn(self);
+            let move_shared = self.shared.clone();
             move_shared.pending_tasks.lock().unwrap().push(Box::new(task));
             move_shared.new_pending_task_sender.send_by_ref();
             observer
@@ -94,6 +94,12 @@ impl SomeExecutor for SomeExecutorAdapter {
         self.shared.pending_tasks.lock().unwrap().push(Box::new(task));
         self.shared.new_pending_task_sender.send_by_ref();
         Box::new(observer) as Box<dyn Observer<Value=Box<dyn Any + Send>>>
+    }
+
+    fn spawn_objsafe_async<'s>(&'s mut self, task: Task<Pin<Box<dyn Future<Output=Box<dyn Any + 'static + Send>> + 'static + Send>>, Box<dyn ObserverNotified<dyn Any + Send> + Send>>) -> Box<dyn Future<Output=Box<dyn Observer<Value=Box<dyn Any + Send>>>> + 's> {
+        Box::new(async {
+            Self::spawn_objsafe(self, task)
+        })
     }
 
     fn clone_box(&self) -> Box<DynExecutor> {
