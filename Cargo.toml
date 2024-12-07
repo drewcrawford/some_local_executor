@@ -1,6 +1,6 @@
 [package]
 name = "some_local_executor"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Drew Crawford <drew@sealedabstract.com>"]
 description = "A simple local executor"
 edition = "2021"
@@ -12,6 +12,6 @@ exclude = [".*"]
 rust-version = "1.75.0"
 
 [dependencies]
-some_executor = { path = "../some_executor"}
-#some_executor = "0.2.0"
+#some_executor = { path = "../some_executor"}
+some_executor = "0.3.0"
 logwise = "~0"
